@@ -9,7 +9,9 @@ use soroban_sdk::{
 
 #[contracttype]
 enum DataKey {
+    Admin,
     Manager,
+    MerchantDebitorManager,
     Destination,
     UserTransferLimits(Address, Address),
 }
@@ -30,9 +32,13 @@ struct UserDelegate {}
 
 #[contractimpl]
 impl UserDelegate {
-    pub fn __constructor(env: Env, manager: Address, destination: Address) {
-        manager.require_auth();
+    pub fn __constructor(env: Env, admin: Address, manager: Address, merchant_debitor_manager: Address, destination: Address) {
+        admin.require_auth();
         env.storage().instance().set(&DataKey::Manager, &manager);
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::MerchantDebitorManager, &merchant_debitor_manager);
         env.storage()
             .instance()
             .set(&DataKey::Destination, &destination);
@@ -40,12 +46,25 @@ impl UserDelegate {
 
     pub fn debit(
         env: Env,
+        merchant: u64,
         debitor: Address,
         user: Address,
         token: Address,
         amount: i128,
     ) -> Result<(), UserDelegateError> {
         debitor.require_auth();
+
+        let merchant_debitor_manager_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::MerchantDebitorManager)
+            .unwrap();
+        let merchant_debitor_manager = 
+            merchant_debitor_manager::MerchantDebitorManagerClient::new(&env, &merchant_debitor_manager_address);
+        let is_allowed = merchant_debitor_manager.is_allowed(&merchant, &debitor);
+        if !is_allowed {
+            return Err(UserDelegateError::Unauthorized);
+        }
 
         let transfer_limit: TransferLimit = env
             .storage()
