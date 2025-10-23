@@ -9,14 +9,8 @@ enum DataKey {
     Admin,
     MerchantDebitorManager,
     UserDelegateWasmHash,
-    UserDelegate(u64, Address),
+    UserDelegate(u64),
     Merchant(u64),
-}
-#[contracttype]
-#[derive(Debug, Clone)]
-struct UserDelegate {
-    pub merchant: u64,
-    pub user: Address,
 }
 
 #[contracttype]
@@ -30,7 +24,12 @@ pub struct Manager;
 
 #[contractimpl]
 impl Manager {
-    pub fn __constructor(env: Env, admin: Address, merchant_debitor_manager: Address, user_delegate_wasm_hash: Address) {
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        merchant_debitor_manager: Address,
+        user_delegate_wasm_hash: Address,
+    ) {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -40,7 +39,7 @@ impl Manager {
             .set(&DataKey::UserDelegateWasmHash, &user_delegate_wasm_hash);
     }
 
-    pub fn add_user_delegate(env: Env, merchant: u64, user: Address) {
+    fn deploy_user_delegate(env: Env, merchant: u64) -> Address {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
 
@@ -50,32 +49,50 @@ impl Manager {
             .get(&DataKey::UserDelegateWasmHash)
             .unwrap();
 
-        let merchant_config: Merchant = env
+        let merchant_debitor_manager_address: Address = env
             .storage()
-            .persistent()
-            .get(&DataKey::Merchant(merchant))
+            .instance()
+            .get(&DataKey::MerchantDebitorManager)
             .unwrap();
 
         let user_delegate_address = env
             .deployer()
-            .with_current_contract(
-                env.crypto().sha256(
-                    &UserDelegate {
-                        merchant,
-                        user: user.clone(),
-                    }
-                    .to_xdr(&env),
-                ),
-            )
+            .with_current_contract(env.crypto().sha256(&merchant.to_xdr(&env)))
             .deploy_v2(
                 user_delegate_wasm_hash,
-                vec![&env, admin, merchant_config.destination],
+                vec![
+                    &env,
+                    admin.clone(),
+                    admin.clone(),
+                    merchant_debitor_manager_address,
+                ],
             );
 
-        env.storage().persistent().set(
-            &DataKey::UserDelegate(merchant, user),
-            &user_delegate_address,
-        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::UserDelegate(merchant), &user_delegate_address);
+
+        user_delegate_address
+    }
+
+    pub fn add_user_delegate(
+        env: Env,
+        merchant: u64,
+        user: Address,
+        token: Address,
+        per_transfer_limit: i128,
+    ) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        let user_delegate_address: Address = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&DataKey::UserDelegate(merchant))
+            .unwrap_or_else(|| Self::deploy_user_delegate(env.clone(), merchant));
+
+        let user_delegate = UserDelegateClient::new(&env, &user_delegate_address);
+        user_delegate.add_user_delegate(&user, &token, &per_transfer_limit);
     }
 
     pub fn add_merchant(env: Env, merchant: u64, destination: Address) {
@@ -89,41 +106,37 @@ impl Manager {
             .set(&DataKey::Merchant(merchant), &merchant_config);
     }
 
-    pub fn add_merchant_debitor(
-        env: Env,
-        merchant: u64,
-        debitor: Address,
-    ) {
+    pub fn add_merchant_debitor(env: Env, merchant: u64, debitor: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
         let merchant_debitor_manager_address: Address = env
             .storage()
             .instance()
             .get(&DataKey::MerchantDebitorManager)
             .unwrap();
 
-        let merchant_debitor_manager =
-            merchant_debitor_manager::MerchantDebitorManagerClient::new(
-                &env,
-                &merchant_debitor_manager_address,
-            );
+        let merchant_debitor_manager = merchant_debitor_manager::MerchantDebitorManagerClient::new(
+            &env,
+            &merchant_debitor_manager_address,
+        );
         merchant_debitor_manager.add_merchant_debitor(&merchant, &debitor);
     }
 
-    pub fn remove_merchant_debitor(
-        env: Env,
-        merchant: u64,
-        debitor: Address,
-    ) {
+    pub fn remove_merchant_debitor(env: Env, merchant: u64, debitor: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
         let merchant_debitor_manager_address: Address = env
             .storage()
             .instance()
             .get(&DataKey::MerchantDebitorManager)
             .unwrap();
 
-        let merchant_debitor_manager =
-            merchant_debitor_manager::MerchantDebitorManagerClient::new(
-                &env,
-                &merchant_debitor_manager_address,
-            );
+        let merchant_debitor_manager = merchant_debitor_manager::MerchantDebitorManagerClient::new(
+            &env,
+            &merchant_debitor_manager_address,
+        );
         merchant_debitor_manager.remove_merchant_debitor(&merchant, &debitor);
     }
 
@@ -138,7 +151,7 @@ impl Manager {
         let user_delegate_address: Address = env
             .storage()
             .instance()
-            .get(&DataKey::UserDelegate(merchant, user.clone()))
+            .get(&DataKey::UserDelegate(merchant))
             .unwrap();
 
         let user_delegate = UserDelegateClient::new(&env, &user_delegate_address);

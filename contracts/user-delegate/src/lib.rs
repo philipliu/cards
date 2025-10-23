@@ -32,7 +32,13 @@ struct UserDelegate {}
 
 #[contractimpl]
 impl UserDelegate {
-    pub fn __constructor(env: Env, admin: Address, manager: Address, merchant_debitor_manager: Address, destination: Address) {
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        manager: Address,
+        merchant_debitor_manager: Address,
+        destination: Address,
+    ) {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Manager, &manager);
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -42,6 +48,17 @@ impl UserDelegate {
         env.storage()
             .instance()
             .set(&DataKey::Destination, &destination);
+    }
+
+    pub fn add_user_delegate(env: Env, user: Address, token: Address, per_transfer_limit: i128) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        let transfer_limit = TransferLimit { per_transfer_limit };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::UserTransferLimits(user, token), &transfer_limit);
     }
 
     pub fn debit(
@@ -59,8 +76,10 @@ impl UserDelegate {
             .instance()
             .get(&DataKey::MerchantDebitorManager)
             .unwrap();
-        let merchant_debitor_manager = 
-            merchant_debitor_manager::MerchantDebitorManagerClient::new(&env, &merchant_debitor_manager_address);
+        let merchant_debitor_manager = merchant_debitor_manager::MerchantDebitorManagerClient::new(
+            &env,
+            &merchant_debitor_manager_address,
+        );
         let is_allowed = merchant_debitor_manager.is_allowed(&merchant, &debitor);
         if !is_allowed {
             return Err(UserDelegateError::Unauthorized);

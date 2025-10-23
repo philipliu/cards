@@ -43,11 +43,7 @@ impl MerchantDebitorManager {
             .remove(&DataKey::MerchantDebitor(merchant, debitor));
     }
 
-    pub fn is_allowed(
-        env: soroban_sdk::Env,
-        merchant: u64,
-        debitor: soroban_sdk::Address,
-    ) -> bool {
+    pub fn is_allowed(env: soroban_sdk::Env, merchant: u64, debitor: soroban_sdk::Address) -> bool {
         env.storage()
             .persistent()
             .get::<DataKey, ()>(&DataKey::MerchantDebitor(merchant, debitor))
