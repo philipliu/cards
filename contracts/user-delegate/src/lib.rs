@@ -1,10 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    auth::{Context, CustomAccountInterface},
     contract, contracterror, contractimpl, contracttype,
-    crypto::Hash,
-    token, Address, Env, Vec,
+    token, Address, Env,
 };
 
 #[contracttype]
@@ -104,21 +102,6 @@ impl UserDelegate {
             &amount,
         );
 
-        Ok(())
-    }
-}
-
-#[contractimpl]
-impl CustomAccountInterface for UserDelegate {
-    type Signature = ();
-    type Error = UserDelegateError;
-
-    fn __check_auth(
-        _env: Env,
-        _signature_payload: Hash<32>,
-        _signatures: Self::Signature,
-        _auth_context: Vec<Context>,
-    ) -> Result<(), UserDelegateError> {
         Ok(())
     }
 }
