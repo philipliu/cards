@@ -7,6 +7,7 @@ use user_delegate::UserDelegateClient;
 #[contracttype]
 enum DataKey {
     Admin,
+    PendingAdmin,
     UserDelegateWasmHash,
     UserDelegate(u64),
     MerchantManager(u64),
@@ -36,6 +37,24 @@ impl Manager {
         env.storage()
             .instance()
             .set(&DataKey::UserDelegateWasmHash, &user_delegate_wasm_hash);
+    }
+
+    pub fn begin_admin_transfer(env: Env, new_admin: Address) {
+        Self::require_admin(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+    }
+
+    pub fn accept_admin_transfer(env: Env) {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .expect("no pending admin transfer");
+        pending.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
     }
 
     pub fn set_merchant_manager(env: Env, merchant: u64, manager: Address) {
@@ -98,6 +117,13 @@ impl Manager {
         user_delegate.set_debitor_allowed(&token, &debitor, &allowed);
     }
 
+    pub fn remove_user_delegate(env: Env, merchant: u64, user: Address, token: Address) {
+        Self::require_merchant_manager(&env, merchant);
+        let user_delegate_address = Self::existing_user_delegate(&env, merchant);
+        let user_delegate = UserDelegateClient::new(&env, &user_delegate_address);
+        user_delegate.remove_user_delegate(&user, &token);
+    }
+
     pub fn debit_user(
         env: Env,
         merchant: u64,
@@ -110,6 +136,13 @@ impl Manager {
         let user_delegate_address = Self::existing_user_delegate(&env, merchant);
         let user_delegate = UserDelegateClient::new(&env, &user_delegate_address);
         user_delegate.debit(&debitor, &user, &token, &destination, &amount);
+    }
+
+    pub fn close_user_delegate(env: Env, merchant: u64) {
+        Self::require_admin(&env);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::UserDelegate(merchant));
     }
 
     fn admin(env: &Env) -> Address {

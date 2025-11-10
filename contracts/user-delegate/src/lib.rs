@@ -96,6 +96,12 @@ impl UserDelegate {
         Self::write_flag(&env, key, allowed);
     }
 
+    pub fn remove_user_delegate(env: Env, user: Address, token: Address) {
+        Self::require_manager(&env);
+        let key = DataKey::UserTransferConfig(user, token);
+        env.storage().instance().remove(&key);
+    }
+
     pub fn debit(
         env: Env,
         debitor: Address,
