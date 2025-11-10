@@ -11,7 +11,6 @@ doctest = false
 [dependencies]
 soroban-sdk = { workspace = true }
 user-delegate = { path = "../user-delegate" }
-merchant-debitor-manager = { path = "../merchant-debitor-manager" }
 
 
 [dev-dependencies]

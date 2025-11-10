@@ -6,12 +6,13 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Ad
 enum DataKey {
     Admin,
     Manager,
-    MerchantDebitorManager,
-    Destination,
-    UserTransferConfig(Address, Address),
+    TokenDestination(Address, Address),   // (token, destination)
+    TokenDebitor(Address, Address),       // (token, debitor)
+    UserTransferConfig(Address, Address), // (user, token)
 }
 
 #[contracttype]
+#[derive(Clone, Debug)]
 struct TransferLimit {
     per_transfer_limit: i128,
     period_transfer_limit: i128,
@@ -22,35 +23,33 @@ struct TransferLimit {
 }
 
 #[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum UserDelegateError {
     Unauthorized = 0,
     TransferLimitExceeded = 1,
     PeriodTransferLimitExceeded = 2,
     MultipleTransfersInLedger = 3,
     ArithmeticOverflow = 4,
+    DestinationNotAllowed = 5,
+    DebitorNotAllowed = 6,
 }
 
 #[contract]
-struct UserDelegate {}
+pub struct UserDelegate;
 
 #[contractimpl]
 impl UserDelegate {
-    pub fn __constructor(
-        env: Env,
-        admin: Address,
-        manager: Address,
-        merchant_debitor_manager: Address,
-        destination: Address,
-    ) {
+    pub fn __constructor(env: Env, admin: Address, manager: Address) {
         admin.require_auth();
-        env.storage().instance().set(&DataKey::Manager, &manager);
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::Manager, &manager);
+    }
+
+    pub fn update_manager(env: Env, new_manager: Address) {
+        Self::require_admin(&env);
         env.storage()
             .instance()
-            .set(&DataKey::MerchantDebitorManager, &merchant_debitor_manager);
-        env.storage()
-            .instance()
-            .set(&DataKey::Destination, &destination);
+            .set(&DataKey::Manager, &new_manager);
     }
 
     pub fn add_user_delegate(
@@ -61,52 +60,68 @@ impl UserDelegate {
         period_transfer_limit: i128,
         period_window_seconds: u64,
     ) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        admin.require_auth();
+        Self::require_manager(&env);
+        let key = DataKey::UserTransferConfig(user.clone(), token.clone());
+        let mut transfer_limit =
+            env.storage()
+                .instance()
+                .get(&key)
+                .unwrap_or_else(|| TransferLimit {
+                    per_transfer_limit,
+                    period_transfer_limit,
+                    period_window_seconds,
+                    period_transferred_amount: 0,
+                    period_started_at: env.ledger().timestamp(),
+                    last_ledger: 0,
+                });
 
-        let ledger = env.ledger();
-        let transfer_limit = TransferLimit {
-            per_transfer_limit,
-            period_transfer_limit,
-            period_window_seconds,
-            period_transferred_amount: 0,
-            period_started_at: ledger.timestamp(),
-            last_ledger: 0,
-        };
+        transfer_limit.per_transfer_limit = per_transfer_limit;
+        transfer_limit.period_transfer_limit = period_transfer_limit;
+        transfer_limit.period_window_seconds = period_window_seconds;
+        if transfer_limit.period_started_at == 0 {
+            transfer_limit.period_started_at = env.ledger().timestamp();
+        }
+        env.storage().instance().set(&key, &transfer_limit);
+    }
 
-        env.storage()
-            .instance()
-            .set(&DataKey::UserTransferConfig(user, token), &transfer_limit);
+    pub fn set_destination_allowed(env: Env, token: Address, destination: Address, allowed: bool) {
+        Self::require_admin(&env);
+        let key = DataKey::TokenDestination(token, destination);
+        Self::write_flag(&env, key, allowed);
+    }
+
+    pub fn set_debitor_allowed(env: Env, token: Address, debitor: Address, allowed: bool) {
+        Self::require_manager(&env);
+        let key = DataKey::TokenDebitor(token, debitor);
+        Self::write_flag(&env, key, allowed);
     }
 
     pub fn debit(
         env: Env,
-        merchant: u64,
         debitor: Address,
         user: Address,
         token: Address,
+        destination: Address,
         amount: i128,
     ) -> Result<(), UserDelegateError> {
         debitor.require_auth();
 
-        let merchant_debitor_manager_address: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::MerchantDebitorManager)
-            .unwrap();
-        let merchant_debitor_manager = merchant_debitor_manager::MerchantDebitorManagerClient::new(
-            &env,
-            &merchant_debitor_manager_address,
-        );
-        let is_allowed = merchant_debitor_manager.is_allowed(&merchant, &debitor);
-        if !is_allowed {
-            return Err(UserDelegateError::Unauthorized);
+        if !Self::is_flag_set(&env, DataKey::TokenDebitor(token.clone(), debitor.clone())) {
+            return Err(UserDelegateError::DebitorNotAllowed);
         }
 
+        if !Self::is_flag_set(
+            &env,
+            DataKey::TokenDestination(token.clone(), destination.clone()),
+        ) {
+            return Err(UserDelegateError::DestinationNotAllowed);
+        }
+
+        let key = DataKey::UserTransferConfig(user.clone(), token.clone());
         let mut transfer_limit: TransferLimit = env
             .storage()
             .instance()
-            .get(&DataKey::UserTransferConfig(user.clone(), token.clone()))
+            .get(&key)
             .ok_or(UserDelegateError::Unauthorized)?;
 
         if amount > transfer_limit.per_transfer_limit {
@@ -115,7 +130,7 @@ impl UserDelegate {
 
         let ledger = env.ledger();
         let timestamp = ledger.timestamp();
-        let ledger_sequence: u32 = ledger.sequence();
+        let ledger_sequence = ledger.sequence();
 
         if transfer_limit.period_window_seconds > 0
             && timestamp.saturating_sub(transfer_limit.period_started_at)
@@ -138,8 +153,6 @@ impl UserDelegate {
             return Err(UserDelegateError::MultipleTransfersInLedger);
         }
 
-        let destination: Address = env.storage().instance().get(&DataKey::Destination).unwrap();
-
         token::TokenClient::new(&env, &token).transfer_from(
             &env.current_contract_address(),
             &user,
@@ -150,10 +163,35 @@ impl UserDelegate {
         transfer_limit.period_transferred_amount = updated_period_total;
         transfer_limit.last_ledger = ledger_sequence;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::UserTransferConfig(user, token), &transfer_limit);
+        env.storage().instance().set(&key, &transfer_limit);
 
         Ok(())
+    }
+
+    fn require_admin(env: &Env) -> Address {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        admin
+    }
+
+    fn require_manager(env: &Env) -> Address {
+        let manager: Address = env.storage().instance().get(&DataKey::Manager).unwrap();
+        manager.require_auth();
+        manager
+    }
+
+    fn write_flag(env: &Env, key: DataKey, allowed: bool) {
+        if allowed {
+            env.storage().instance().set(&key, &true);
+        } else {
+            env.storage().instance().remove(&key);
+        }
+    }
+
+    fn is_flag_set(env: &Env, key: DataKey) -> bool {
+        env.storage()
+            .instance()
+            .get::<DataKey, bool>(&key)
+            .unwrap_or(false)
     }
 }
